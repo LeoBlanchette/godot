@@ -60,6 +60,7 @@
 #include "platform/register_platform_apis.h"
 #include "scene/main/scene_tree.h"
 #include "scene/main/window.h"
+#include "scene/property_list_helper.h"
 #include "scene/register_scene_types.h"
 #include "scene/resources/packed_scene.h"
 #include "scene/theme/theme_db.h"
@@ -793,6 +794,7 @@ void Main::test_cleanup() {
 
 	ResourceLoader::remove_custom_loaders();
 	ResourceSaver::remove_custom_savers();
+	PropertyListHelper::clear_base_helpers();
 
 #ifdef TOOLS_ENABLED
 	GDExtensionManager::get_singleton()->deinitialize_extensions(GDExtension::INITIALIZATION_LEVEL_EDITOR);
@@ -909,13 +911,11 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 
 	// Benchmark tracking must be done after `OS::get_singleton()->initialize()` as on some
 	// platforms, it's used to set up the time utilities.
-	OS::get_singleton()->benchmark_begin_measure("Startup", "Total");
-	OS::get_singleton()->benchmark_begin_measure("Startup", "Setup");
+	OS::get_singleton()->benchmark_begin_measure("Startup", "Main::Setup");
 
 	engine = memnew(Engine);
 
 	MAIN_PRINT("Main: Initialize CORE");
-	OS::get_singleton()->benchmark_begin_measure("Startup", "Core");
 
 	register_core_types();
 	register_core_driver_types();
@@ -2453,8 +2453,6 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 	Thread::release_main_thread(); // If setup2() is called from another thread, that one will become main thread, so preventively release this one.
 	set_current_thread_safe_for_nodes(false);
 
-	OS::get_singleton()->benchmark_end_measure("Startup", "Core");
-
 #if defined(STEAMAPI_ENABLED)
 	if (editor || project_manager) {
 		steam_tracker = memnew(SteamTracker);
@@ -2465,7 +2463,7 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 		return setup2();
 	}
 
-	OS::get_singleton()->benchmark_end_measure("Startup", "Setup");
+	OS::get_singleton()->benchmark_end_measure("Startup", "Main::Setup");
 	return OK;
 
 error:
@@ -2519,7 +2517,7 @@ error:
 	}
 
 	OS::get_singleton()->benchmark_end_measure("Startup", "Core");
-	OS::get_singleton()->benchmark_end_measure("Startup", "Setup");
+	OS::get_singleton()->benchmark_end_measure("Startup", "Main::Setup");
 
 #if defined(STEAMAPI_ENABLED)
 	if (steam_tracker) {
@@ -2553,6 +2551,8 @@ Error _parse_resource_dummy(void *p_data, VariantParser::Stream *p_stream, Ref<R
 }
 
 Error Main::setup2(bool p_show_boot_logo) {
+	OS::get_singleton()->benchmark_begin_measure("Startup", "Main::Setup2");
+
 	Thread::make_main_thread(); // Make whatever thread call this the main thread.
 	set_current_thread_safe_for_nodes(true);
 
@@ -2941,6 +2941,8 @@ Error Main::setup2(bool p_show_boot_logo) {
 			id->set_emulate_mouse_from_touch(bool(GLOBAL_DEF_BASIC("input_devices/pointing/emulate_mouse_from_touch", true)));
 		}
 
+		GLOBAL_DEF("input_devices/buffering/android/use_accumulated_input", true);
+		GLOBAL_DEF("input_devices/buffering/android/use_input_buffering", true);
 		GLOBAL_DEF_BASIC("input_devices/pointing/android/enable_long_press_as_right_click", false);
 		GLOBAL_DEF_BASIC("input_devices/pointing/android/enable_pan_and_scale_gestures", false);
 		GLOBAL_DEF_BASIC(PropertyInfo(Variant::INT, "input_devices/pointing/android/rotary_input_scroll_axis", PROPERTY_HINT_ENUM, "Horizontal,Vertical"), 1);
@@ -3149,7 +3151,7 @@ Error Main::setup2(bool p_show_boot_logo) {
 	print_verbose("EDITOR API HASH: " + uitos(ClassDB::get_api_hash(ClassDB::API_EDITOR)));
 	MAIN_PRINT("Main: Done");
 
-	OS::get_singleton()->benchmark_end_measure("Startup", "Setup");
+	OS::get_singleton()->benchmark_end_measure("Startup", "Main::Setup2");
 
 	return OK;
 }
@@ -3230,6 +3232,8 @@ static MainTimerSync main_timer_sync;
 // and should move on to `OS::run`, and EXIT_FAILURE otherwise for
 // an early exit with that error code.
 int Main::start() {
+	OS::get_singleton()->benchmark_begin_measure("Startup", "Main::Start");
+
 	ERR_FAIL_COND_V(!_start_success, false);
 
 	bool has_icon = false;
@@ -3953,7 +3957,7 @@ int Main::start() {
 		}
 	}
 
-	OS::get_singleton()->benchmark_end_measure("Startup", "Total");
+	OS::get_singleton()->benchmark_end_measure("Startup", "Main::Start");
 	OS::get_singleton()->benchmark_dump();
 
 	return EXIT_SUCCESS;
@@ -4041,6 +4045,7 @@ bool Main::iteration() {
 		}
 
 		Engine::get_singleton()->_in_physics = true;
+		Engine::get_singleton()->_physics_frames++;
 
 		uint64_t physics_begin = OS::get_singleton()->get_ticks_usec();
 
@@ -4088,7 +4093,6 @@ bool Main::iteration() {
 
 		physics_process_ticks = MAX(physics_process_ticks, OS::get_singleton()->get_ticks_usec() - physics_begin); // keep the largest one for reference
 		physics_process_max = MAX(OS::get_singleton()->get_ticks_usec() - physics_begin, physics_process_max);
-		Engine::get_singleton()->_physics_frames++;
 
 		Engine::get_singleton()->_in_physics = false;
 	}
@@ -4221,7 +4225,7 @@ void Main::force_redraw() {
  * The order matters as some of those steps are linked with each other.
  */
 void Main::cleanup(bool p_force) {
-	OS::get_singleton()->benchmark_begin_measure("Shutdown", "Total");
+	OS::get_singleton()->benchmark_begin_measure("Shutdown", "Main::Cleanup");
 	if (!p_force) {
 		ERR_FAIL_COND(!_start_success);
 	}
@@ -4244,6 +4248,7 @@ void Main::cleanup(bool p_force) {
 
 	ResourceLoader::remove_custom_loaders();
 	ResourceSaver::remove_custom_savers();
+	PropertyListHelper::clear_base_helpers();
 
 	// Flush before uninitializing the scene, but delete the MessageQueue as late as possible.
 	message_queue->flush();
@@ -4379,7 +4384,7 @@ void Main::cleanup(bool p_force) {
 
 	unregister_core_types();
 
-	OS::get_singleton()->benchmark_end_measure("Shutdown", "Total");
+	OS::get_singleton()->benchmark_end_measure("Shutdown", "Main::Cleanup");
 	OS::get_singleton()->benchmark_dump();
 
 	OS::get_singleton()->finalize_core();
