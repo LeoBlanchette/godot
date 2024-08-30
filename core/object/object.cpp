@@ -207,10 +207,13 @@ void Object::cancel_free() {
 	_predelete_ok = false;
 }
 
-void Object::_postinitialize() {
-	_class_name_ptr = _get_class_namev(); // Set the direct pointer, which is much faster to obtain, but can only happen after postinitialize.
+void Object::_initialize() {
+	_class_name_ptr = _get_class_namev(); // Set the direct pointer, which is much faster to obtain, but can only happen after _initialize.
 	_initialize_classv();
 	_class_name_ptr = nullptr; // May have been called from a constructor.
+}
+
+void Object::_postinitialize() {
 	notification(NOTIFICATION_POSTINITIALIZE);
 }
 
@@ -994,7 +997,7 @@ void Object::set_meta(const StringName &p_name, const Variant &p_value) {
 	if (E) {
 		E->value = p_value;
 	} else {
-		ERR_FAIL_COND_MSG(!p_name.operator String().is_valid_identifier(), "Invalid metadata identifier: '" + p_name + "'.");
+		ERR_FAIL_COND_MSG(!p_name.operator String().is_valid_ascii_identifier(), "Invalid metadata identifier: '" + p_name + "'.");
 		Variant *V = &metadata.insert(p_name, p_value)->value;
 
 		const String &sname = p_name;
@@ -1018,6 +1021,14 @@ Variant Object::get_meta(const StringName &p_name, const Variant &p_default) con
 
 void Object::remove_meta(const StringName &p_name) {
 	set_meta(p_name, Variant());
+}
+
+void Object::merge_meta_from(const Object *p_src) {
+	List<StringName> meta_keys;
+	p_src->get_meta_list(&meta_keys);
+	for (const StringName &key : meta_keys) {
+		set_meta(key, p_src->get_meta(key));
+	}
 }
 
 TypedArray<Dictionary> Object::_get_property_list_bind() const {
@@ -1901,7 +1912,7 @@ void Object::set_instance_binding(void *p_token, void *p_binding, const GDExtens
 
 void *Object::get_instance_binding(void *p_token, const GDExtensionInstanceBindingCallbacks *p_callbacks) {
 	void *binding = nullptr;
-	_instance_binding_mutex.lock();
+	MutexLock instance_binding_lock(_instance_binding_mutex);
 	for (uint32_t i = 0; i < _instance_binding_count; i++) {
 		if (_instance_bindings[i].token == p_token) {
 			binding = _instance_bindings[i].binding;
@@ -1932,14 +1943,12 @@ void *Object::get_instance_binding(void *p_token, const GDExtensionInstanceBindi
 		_instance_binding_count++;
 	}
 
-	_instance_binding_mutex.unlock();
-
 	return binding;
 }
 
 bool Object::has_instance_binding(void *p_token) {
 	bool found = false;
-	_instance_binding_mutex.lock();
+	MutexLock instance_binding_lock(_instance_binding_mutex);
 	for (uint32_t i = 0; i < _instance_binding_count; i++) {
 		if (_instance_bindings[i].token == p_token) {
 			found = true;
@@ -1947,14 +1956,12 @@ bool Object::has_instance_binding(void *p_token) {
 		}
 	}
 
-	_instance_binding_mutex.unlock();
-
 	return found;
 }
 
 void Object::free_instance_binding(void *p_token) {
 	bool found = false;
-	_instance_binding_mutex.lock();
+	MutexLock instance_binding_lock(_instance_binding_mutex);
 	for (uint32_t i = 0; i < _instance_binding_count; i++) {
 		if (!found && _instance_bindings[i].token == p_token) {
 			if (_instance_bindings[i].free_callback) {
@@ -1973,7 +1980,6 @@ void Object::free_instance_binding(void *p_token) {
 	if (found) {
 		_instance_binding_count--;
 	}
-	_instance_binding_mutex.unlock();
 }
 
 #ifdef TOOLS_ENABLED
@@ -2097,7 +2103,11 @@ Object::~Object() {
 	// Disconnect signals that connect to this object.
 	while (connections.size()) {
 		Connection c = connections.front()->get();
-		bool disconnected = c.signal.get_object()->_disconnect(c.signal.get_name(), c.callable, true);
+		Object *obj = c.callable.get_object();
+		bool disconnected = false;
+		if (likely(obj)) {
+			disconnected = c.signal.get_object()->_disconnect(c.signal.get_name(), c.callable, true);
+		}
 		if (unlikely(!disconnected)) {
 			// If the disconnect has failed, abandon the connection to avoid getting trapped in an infinite loop here.
 			connections.pop_front();
@@ -2125,6 +2135,7 @@ bool predelete_handler(Object *p_object) {
 }
 
 void postinitialize_handler(Object *p_object) {
+	p_object->_initialize();
 	p_object->_postinitialize();
 }
 
@@ -2286,7 +2297,7 @@ void ObjectDB::cleanup() {
 			// Ensure calling the native classes because if a leaked instance has a script
 			// that overrides any of those methods, it'd not be OK to call them at this point,
 			// now the scripting languages have already been terminated.
-			MethodBind *node_get_name = ClassDB::get_method("Node", "get_name");
+			MethodBind *node_get_path = ClassDB::get_method("Node", "get_path");
 			MethodBind *resource_get_path = ClassDB::get_method("Resource", "get_path");
 			Callable::CallError call_error;
 
@@ -2296,7 +2307,7 @@ void ObjectDB::cleanup() {
 
 					String extra_info;
 					if (obj->is_class("Node")) {
-						extra_info = " - Node name: " + String(node_get_name->call(obj, nullptr, 0, call_error));
+						extra_info = " - Node path: " + String(node_get_path->call(obj, nullptr, 0, call_error));
 					}
 					if (obj->is_class("Resource")) {
 						extra_info = " - Resource path: " + String(resource_get_path->call(obj, nullptr, 0, call_error));
