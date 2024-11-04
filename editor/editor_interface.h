@@ -72,6 +72,7 @@ class EditorInterface : public Object {
 	void _node_selection_canceled(const Callable &p_callback);
 	void _property_selected(const String &p_property_name, const Callable &p_callback);
 	void _property_selection_canceled(const Callable &p_callback);
+	void _quick_open(const String &p_file_path, const Callable &p_callback);
 	void _call_dialog_callback(const Callable &p_callback, const Variant &p_selected, const String &p_context);
 
 	// Editor tools.
@@ -80,6 +81,13 @@ class EditorInterface : public Object {
 
 protected:
 	static void _bind_methods();
+
+#ifndef DISABLE_DEPRECATED
+	void _popup_node_selector_bind_compat_94323(const Callable &p_callback, const TypedArray<StringName> &p_valid_types = TypedArray<StringName>());
+	void _popup_property_selector_bind_compat_94323(Object *p_object, const Callable &p_callback, const PackedInt32Array &p_type_filter = PackedInt32Array());
+
+	static void _bind_compatibility_methods();
+#endif
 
 public:
 	static EditorInterface *get_singleton() { return singleton; }
@@ -128,9 +136,10 @@ public:
 
 	// Editor dialogs.
 
-	void popup_node_selector(const Callable &p_callback, const TypedArray<StringName> &p_valid_types = TypedArray<StringName>());
+	void popup_node_selector(const Callable &p_callback, const TypedArray<StringName> &p_valid_types = TypedArray<StringName>(), Node *p_current_value = nullptr);
 	// Must use Vector<int> because exposing Vector<Variant::Type> is not supported.
-	void popup_property_selector(Object *p_object, const Callable &p_callback, const PackedInt32Array &p_type_filter = PackedInt32Array());
+	void popup_property_selector(Object *p_object, const Callable &p_callback, const PackedInt32Array &p_type_filter = PackedInt32Array(), const String &p_current_value = String());
+	void popup_quick_open(const Callable &p_callback, const TypedArray<StringName> &p_base_types = TypedArray<StringName>());
 
 	// Editor docks.
 
